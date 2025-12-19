@@ -1,0 +1,37 @@
+# Editor directories and files
+.vscode/
+.idea/
+.history/
+.eslintrc*
+.prettierrc*
+tsconfig.json
+
+# Tests
+tests/
+__tests__/
+coverage/
+jest.config.js
+.travis.yml
+
+# Source code
+src/
+*.ts
+!*.d.ts
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+credentials.json
+
+# Examples and docs
+examples/
+docs/
+
+# Npmrc
+.npmrc
