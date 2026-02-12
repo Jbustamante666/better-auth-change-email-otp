@@ -1,7 +1,6 @@
-import { defineErrorCodes, type BetterAuthPlugin } from "better-auth";
+import { defineErrorCodes, z, type BetterAuthPlugin } from "better-auth";
 import { createAuthEndpoint, sessionMiddleware } from "better-auth/api";
 import { generateRandomString } from "better-auth/crypto";
-import { z } from "zod";
 
 interface OtpOptions {
   length?: number;
@@ -26,15 +25,12 @@ const defaultOptions: Required<OtpOptions> = {
 };
 
 const generateOtp = (length: number) => {
-  const otp = generateRandomString(length, "0-9");
-
-  return String(otp).padStart(length, "0");
+  return generateRandomString(length, "0-9").padStart(length, "0");
 };
 
 const getExpirationDate = (expirationMinutes: number) => {
   const expiresAt = new Date();
   expiresAt.setMinutes(expiresAt.getMinutes() + expirationMinutes);
-
   return expiresAt;
 };
 
@@ -47,18 +43,17 @@ const ERROR_CODES = defineErrorCodes({
 
 const createOtp = (identifier: string, options: OtpOptions = {}) => {
   const config = { ...defaultOptions, ...options };
-  const otp = generateOtp(config.length);
-  const expiresAt = getExpirationDate(config.expirationMinutes);
-
   return {
-    otp,
+    otp: generateOtp(config.length),
     identifier,
-    expiresAt,
+    expiresAt: getExpirationDate(config.expirationMinutes),
   };
 };
 
-export const changeEmailOTP = (params: Params) =>
-  ({
+export const changeEmailOTP = (params: Params): BetterAuthPlugin => {
+  const opts = { ...defaultOptions, ...params.options };
+
+  return {
     id: "change-email-otp",
     endpoints: {
       sendChangeEmailOTP: createAuthEndpoint(
@@ -68,25 +63,23 @@ export const changeEmailOTP = (params: Params) =>
           body: z.object({
             email: z.email().trim().toLowerCase().meta({
               required: true,
-              description: "The email to send the change email OTP to",
+              description: "The email address for sending the change email OTP",
             }),
           }),
           use: [sessionMiddleware],
           metadata: {
             openapi: {
               operationId: "sendChangeEmailOTP",
-              description: "Send change email OTP",
-              tags: ["Change-email-otp"],
+              description: "Send OTP to change email",
               responses: {
                 200: {
-                  description: "Send change email OTP successfully",
+                  description: "Success",
                   content: {
                     "application/json": {
                       schema: {
                         type: "object",
-                        properties: {
-                          success: { type: "boolean" },
-                        },
+                        properties: { success: { type: "boolean" } },
+                        required: ["success"],
                       },
                     },
                   },
@@ -97,22 +90,20 @@ export const changeEmailOTP = (params: Params) =>
         },
         async (ctx) => {
           const { email } = ctx.body;
+          const session = ctx.context.session;
+          if (!session) throw ctx.error("UNAUTHORIZED");
 
-          if (!ctx.context.session) throw ctx.error("UNAUTHORIZED");
-
-          const { identifier, otp, expiresAt } = createOtp(
+          const { otp, identifier, expiresAt } = createOtp(
             `change-email-otp-${email}`,
-            params.options,
+            opts,
           );
 
-          const emailAlreadyExists =
+          const emailExists =
             await ctx.context.internalAdapter.findUserByEmail(email);
-
-          if (emailAlreadyExists) {
+          if (emailExists)
             throw ctx.error("BAD_REQUEST", {
               message: ERROR_CODES.EMAIL_ALREADY_EXISTS,
             });
-          }
 
           await ctx.context.internalAdapter
             .createVerificationValue({
@@ -124,7 +115,6 @@ export const changeEmailOTP = (params: Params) =>
               await ctx.context.internalAdapter.deleteVerificationByIdentifier(
                 identifier,
               );
-
               await ctx.context.internalAdapter.createVerificationValue({
                 identifier,
                 value: `${otp}:0`,
@@ -133,7 +123,6 @@ export const changeEmailOTP = (params: Params) =>
             });
 
           await params.sendChangeEmailOTP({ email, otp });
-
           return ctx.json({ success: true });
         },
       ),
@@ -144,7 +133,7 @@ export const changeEmailOTP = (params: Params) =>
           body: z.object({
             email: z.email().trim().toLowerCase().meta({
               required: true,
-              description: "The email to verify the change email OTP for",
+              description: "The email address to verify the change email OTP",
             }),
             otp: z
               .string()
@@ -152,25 +141,23 @@ export const changeEmailOTP = (params: Params) =>
               .max(params.options?.length ?? defaultOptions.length)
               .meta({
                 required: true,
-                description: "The OTP to verify the change email OTP for",
+                description: "The OTP used to verify the change email OTP",
               }),
           }),
           use: [sessionMiddleware],
           metadata: {
             openapi: {
               operationId: "verifyChangeEmailOTP",
-              description: "Verify change email OTP",
-              tags: ["Change-email-otp"],
+              description: "Verify OTP for changing email",
               responses: {
                 200: {
-                  description: "Verify change email OTP successfully",
+                  description: "Success",
                   content: {
                     "application/json": {
                       schema: {
                         type: "object",
-                        properties: {
-                          success: { type: "boolean" },
-                        },
+                        properties: { success: { type: "boolean" } },
+                        required: ["success"],
                       },
                     },
                   },
@@ -181,42 +168,29 @@ export const changeEmailOTP = (params: Params) =>
         },
         async (ctx) => {
           const { email, otp } = ctx.body;
-
           const session = ctx.context.session;
-
           if (!session) throw ctx.error("UNAUTHORIZED");
 
           const identifier = `change-email-otp-${email}`;
-
           const verificationValue =
             await ctx.context.internalAdapter.findVerificationValue(identifier);
 
-          if (!verificationValue) {
+          if (!verificationValue)
             throw ctx.error("BAD_REQUEST", {
               message: ERROR_CODES.INVALID_OTP,
             });
-          }
-
-          if (verificationValue.expiresAt < new Date()) {
+          if (verificationValue.expiresAt < new Date())
             throw ctx.error("BAD_REQUEST", {
               message: ERROR_CODES.OTP_EXPIRED,
             });
-          }
 
-          const [storedOtp, storedOtpAttempts] =
-            verificationValue.value.split(":");
+          const [storedOtp, attemptsStr] = verificationValue.value.split(":");
+          const attempts = parseInt(attemptsStr, 10) || 0;
 
-          const allowedAttempts =
-            params.options?.maxAttempts ?? defaultOptions.maxAttempts;
-
-          if (
-            storedOtpAttempts &&
-            Number.parseInt(storedOtpAttempts, 10) >= allowedAttempts
-          ) {
+          if (attempts >= opts.maxAttempts) {
             await ctx.context.internalAdapter.deleteVerificationValue(
               verificationValue.id,
             );
-
             throw ctx.error("BAD_REQUEST", {
               message: ERROR_CODES.TOO_MANY_ATTEMPTS,
             });
@@ -225,11 +199,8 @@ export const changeEmailOTP = (params: Params) =>
           if (storedOtp !== otp) {
             await ctx.context.internalAdapter.updateVerificationValue(
               verificationValue.id,
-              {
-                value: `${storedOtp}:${Number.parseInt(storedOtpAttempts, 10) + 1}`,
-              },
+              { value: `${storedOtp}:${attempts + 1}` },
             );
-
             throw ctx.error("BAD_REQUEST", {
               message: ERROR_CODES.INVALID_OTP,
             });
@@ -238,7 +209,6 @@ export const changeEmailOTP = (params: Params) =>
           await ctx.context.internalAdapter.deleteVerificationValue(
             verificationValue.id,
           );
-
           await ctx.context.internalAdapter.updateUser(session.user.id, {
             email,
             emailVerified: true,
@@ -251,18 +221,15 @@ export const changeEmailOTP = (params: Params) =>
     $ERROR_CODES: ERROR_CODES,
     rateLimit: [
       {
-        pathMatcher(path) {
-          return path === "/send-change-email-otp";
-        },
+        pathMatcher: (p) => p === "/change-email-otp/send",
         window: 60,
         max: 3,
       },
       {
-        pathMatcher(path) {
-          return path === "/verify-change-email-otp";
-        },
+        pathMatcher: (p) => p === "/change-email-otp/verify",
         window: 60,
         max: 3,
       },
     ],
-  }) satisfies BetterAuthPlugin;
+  };
+};
