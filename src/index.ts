@@ -1,6 +1,7 @@
-import { defineErrorCodes, z, type BetterAuthPlugin } from "better-auth";
+import { defineErrorCodes, type BetterAuthPlugin } from "better-auth";
 import { createAuthEndpoint, sessionMiddleware } from "better-auth/api";
 import { generateRandomString } from "better-auth/crypto";
+import { z } from "zod";
 
 interface OtpOptions {
   length?: number;
