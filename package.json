@@ -1,6 +1,6 @@
 {
   "name": "better-auth-change-email-otp-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Better Auth plugin for changing email with OTP verification.",
   "type": "module",
   "main": "./dist/index.mjs",
